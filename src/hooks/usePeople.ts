@@ -1,28 +1,26 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { type Person } from '../types';
-import { loadPeople, savePeople } from '../utils/splitStorage';
+import { loadPeople, insertPerson, deletePerson } from '../utils/splitStorage';
 import { v4 } from '../utils/uuid';
 
 export function usePeople() {
-  const [people, setPeople] = useState<Person[]>(() => loadPeople());
+  const [people, setPeople] = useState<Person[]>([]);
 
-  const addPerson = useCallback((name: string): Person => {
+  useEffect(() => {
+    loadPeople().then(setPeople);
+  }, []);
+
+  const addPerson = useCallback(async (name: string): Promise<Person> => {
     const person: Person = { id: v4(), name: name.trim() };
-    setPeople((prev) => {
-      const updated = [...prev, person];
-      savePeople(updated);
-      return updated;
-    });
+    await insertPerson(person);
+    setPeople((prev) => [...prev, person]);
     return person;
   }, []);
 
-  const deletePerson = useCallback((id: string) => {
-    setPeople((prev) => {
-      const updated = prev.filter((p) => p.id !== id);
-      savePeople(updated);
-      return updated;
-    });
+  const deletePersonById = useCallback(async (id: string) => {
+    await deletePerson(id);
+    setPeople((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
-  return { people, addPerson, deletePerson };
+  return { people, addPerson, deletePerson: deletePersonById };
 }

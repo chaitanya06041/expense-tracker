@@ -106,13 +106,16 @@ alter table split_records  enable row level security;
 alter table split_shares   enable row level security;
 alter table payment_logs   enable row level security;
 
--- auth_tokens: anon can read (to validate) and insert (on first login).
--- A token may only be deleted by itself (so the app can "log out" a device).
+-- auth_tokens: anon can read (to validate), insert (on first login),
+-- update last_seen, and delete (log out).
 create policy "anon can validate tokens" on auth_tokens
   for select to anon using (true);
 
 create policy "anon can insert tokens" on auth_tokens
   for insert to anon with check (true);
+
+create policy "anon can update tokens" on auth_tokens
+  for update to anon using (true) with check (true);
 
 create policy "anon can delete own token" on auth_tokens
   for delete to anon using (true);

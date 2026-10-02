@@ -7,20 +7,17 @@ const LoginPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-    // Small timeout so the loading state is visible before redirect
-    setTimeout(() => {
-      const ok = loginWithPassword(password);
-      if (!ok) {
-        setError('Incorrect password. Try again.');
-        setLoading(false);
-      }
-      // On success loginWithPassword calls window.location.replace → page reloads
-    }, 200);
+    const result = await loginWithPassword(password);
+    if (!result.ok) {
+      setError(result.reason);
+      setLoading(false);
+    }
+    // On success loginWithPassword calls window.location.replace → page reloads
   };
 
   return (
@@ -108,9 +105,6 @@ const LoginPage: React.FC = () => {
           </form>
         </div>
 
-        <p className="text-center text-xs text-gray-400 mt-6">
-          After unlocking, bookmark this page's URL to skip login next time.
-        </p>
       </div>
     </div>
   );

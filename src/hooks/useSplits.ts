@@ -1,59 +1,86 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { UNSPLITTED_PERSON_NAME, type PaymentLog, type Person, type SplitRecord } from '../types';
-import { loadSplits, saveSplits, loadPaymentLogs, savePaymentLogs, loadPeople } from '../utils/splitStorage';
+import {
+  loadSplits,
+  loadPaymentLogs,
+  loadPeople,
+  insertSplitRecord,
+  deleteSplitRecord,
+  updateSharePaid,
+  insertPaymentLog,
+  deletePaymentLogsForPerson,
+  clearSplitsForPerson,
+} from '../utils/splitStorage';
 import { v4 } from '../utils/uuid';
 import dayjs from 'dayjs';
 
 /** Returns the set of person IDs whose name is the Unsplitted virtual person. */
-function getUnsplittedIds(): Set<string> {
-  const people: Person[] = loadPeople();
+async function getUnsplittedIds(): Promise<Set<string>> {
+  const people: Person[] = await loadPeople();
   return new Set(
-    people.filter((p) => p.name.toLowerCase() === UNSPLITTED_PERSON_NAME.toLowerCase()).map((p) => p.id)
+    people
+      .filter((p) => p.name.toLowerCase() === UNSPLITTED_PERSON_NAME.toLowerCase())
+      .map((p) => p.id)
   );
 }
 
 export function useSplits() {
-  const [splits, setSplits] = useState<SplitRecord[]>(() => loadSplits());
-  const [paymentLogs, setPaymentLogs] = useState<PaymentLog[]>(() => loadPaymentLogs());
+  const [splits, setSplits] = useState<SplitRecord[]>([]);
+  const [paymentLogs, setPaymentLogs] = useState<PaymentLog[]>([]);
 
-  const addSplit = useCallback((split: Omit<SplitRecord, 'id'>): SplitRecord => {
-    // Strip Unsplitted virtual person from shares before persisting
-    const unsplittedIds = getUnsplittedIds();
+  useEffect(() => {
+    loadSplits().then(setSplits);
+    loadPaymentLogs().then(setPaymentLogs);
+  }, []);
+
+  const addSplit = useCallback(async (split: Omit<SplitRecord, 'id'>): Promise<SplitRecord> => {
+    const unsplittedIds = await getUnsplittedIds();
     const cleanedShares = split.shares.filter((sh) => !unsplittedIds.has(sh.personId));
     const record: SplitRecord = { id: v4(), ...split, shares: cleanedShares };
-    // Don't save a split record that has no real shares left
+
     if (record.shares.length === 0) return record;
-    setSplits((prev) => {
-      const updated = [record, ...prev];
-      saveSplits(updated);
-      return updated;
-    });
+
+    await insertSplitRecord(record);
+    setSplits((prev) => [record, ...prev]);
     return record;
   }, []);
 
   /**
    * Reduce a person's outstanding balance across their splits (oldest first),
-   * and log the payment as an immutable entry.
+   * persist each updated share, and log the payment as an immutable entry.
    */
-  const reduceForPerson = useCallback((personId: string, reduceAmount: number) => {
-    setSplits((prevSplits) => {
-      let remaining = reduceAmount;
-      const updated = prevSplits.map((s) => {
-        if (!s.shares.some((sh) => sh.personId === personId && sh.amount - sh.paid > 0.005)) return s;
-        return {
-          ...s,
-          shares: s.shares.map((sh) => {
-            if (sh.personId !== personId || remaining <= 0) return sh;
-            const canReduce = sh.amount - sh.paid;
-            const toApply = Math.min(canReduce, remaining);
-            remaining -= toApply;
-            return { ...sh, paid: sh.paid + toApply };
-          }),
-        };
+  const reduceForPerson = useCallback(async (personId: string, reduceAmount: number) => {
+    let remaining = reduceAmount;
+
+    const updatedSplits = await new Promise<SplitRecord[]>((resolve) => {
+      setSplits((prevSplits) => {
+        const next = prevSplits.map((s) => {
+          if (!s.shares.some((sh) => sh.personId === personId && sh.amount - sh.paid > 0.005))
+            return s;
+          return {
+            ...s,
+            shares: s.shares.map((sh) => {
+              if (sh.personId !== personId || remaining <= 0) return sh;
+              const canReduce = sh.amount - sh.paid;
+              const toApply = Math.min(canReduce, remaining);
+              remaining -= toApply;
+              return { ...sh, paid: sh.paid + toApply };
+            }),
+          };
+        });
+        resolve(next);
+        return next;
       });
-      saveSplits(updated);
-      return updated;
     });
+
+    // Persist updated paid values to Supabase
+    for (const s of updatedSplits) {
+      for (const sh of s.shares) {
+        if (sh.personId === personId) {
+          await updateSharePaid(s.id, personId, sh.paid);
+        }
+      }
+    }
 
     // Append immutable payment log
     const log: PaymentLog = {
@@ -62,41 +89,31 @@ export function useSplits() {
       amount: reduceAmount,
       date: dayjs().format('YYYY-MM-DD'),
     };
-    setPaymentLogs((prev) => {
-      const updated = [log, ...prev];
-      savePaymentLogs(updated);
-      return updated;
-    });
+    await insertPaymentLog(log);
+    setPaymentLogs((prev) => [log, ...prev]);
   }, []);
 
   /**
    * Delete all split history for a person:
-   * - Removes their share from every split record (fully deletes the record if they were the only share).
+   * - Removes their shares (and orphaned records) from the DB.
    * - Wipes all payment logs for that person.
    */
-  const clearPersonToZero = useCallback((personId: string) => {
-    setSplits((prev) => {
-      const updated = prev
+  const clearPersonToZero = useCallback(async (personId: string) => {
+    await clearSplitsForPerson(personId);
+    await deletePaymentLogsForPerson(personId);
+
+    setSplits((prev) =>
+      prev
         .map((s) => ({ ...s, shares: s.shares.filter((sh) => sh.personId !== personId) }))
-        // Drop the whole record if no shares remain
-        .filter((s) => s.shares.length > 0);
-      saveSplits(updated);
-      return updated;
-    });
-    setPaymentLogs((prev) => {
-      const updated = prev.filter((l) => l.personId !== personId);
-      savePaymentLogs(updated);
-      return updated;
-    });
+        .filter((s) => s.shares.length > 0)
+    );
+    setPaymentLogs((prev) => prev.filter((l) => l.personId !== personId));
   }, []);
 
   /** Delete a single split record */
-  const deleteSplit = useCallback((id: string) => {
-    setSplits((prev) => {
-      const updated = prev.filter((s) => s.id !== id);
-      saveSplits(updated);
-      return updated;
-    });
+  const deleteSplit = useCallback(async (id: string) => {
+    await deleteSplitRecord(id);
+    setSplits((prev) => prev.filter((s) => s.id !== id));
   }, []);
 
   return { splits, paymentLogs, addSplit, reduceForPerson, clearPersonToZero, deleteSplit };

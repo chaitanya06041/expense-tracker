@@ -112,10 +112,10 @@ const SplitModal: React.FC<Props> = ({
     );
   };
 
-  const handleAddPerson = () => {
+  const handleAddPerson = async () => {
     const trimmed = (search.trim() || newName.trim());
     if (!trimmed || people.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())) return;
-    const person = addPerson(trimmed);
+    const person = await addPerson(trimmed);
     setNewName('');
     setSearch('');
     setOtherSelected((prev) => [...prev, person]);
@@ -332,10 +332,10 @@ const SplitModal: React.FC<Props> = ({
                 {filteredPeople.length === 0 ? (
                   <button
                     className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-100 transition text-left"
-                    onClick={() => {
+                    onClick={async () => {
                       const trimmed = search.trim();
                       if (!trimmed || people.some((p) => p.name.toLowerCase() === trimmed.toLowerCase())) return;
-                      const person = addPerson(trimmed);
+                      const person = await addPerson(trimmed);
                       setOtherSelected((prev) => [...prev, person]);
                       setSearch('');
                     }}
