@@ -1,18 +1,24 @@
 import { useState, useCallback, useEffect } from 'react';
+import dayjs from 'dayjs';
 import { type Expense } from '../types';
-import { loadExpenses, insertExpense, deleteExpense } from '../utils/storage';
+import { loadExpensesForMonth, insertExpense, deleteExpense } from '../utils/storage';
 
 export function useExpenses() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
 
-  // Load from Supabase on mount
+  // Load only the current month on mount
   useEffect(() => {
-    loadExpenses().then(setExpenses);
+    const ym = dayjs().format('YYYY-MM');
+    loadExpensesForMonth(ym).then(setExpenses);
   }, []);
 
   const addExpense = useCallback(async (expense: Expense) => {
     await insertExpense(expense);
-    setExpenses((prev) => [expense, ...prev]);
+    // Only keep in local state if it belongs to current month
+    const ym = dayjs().format('YYYY-MM');
+    if (expense.date.startsWith(ym)) {
+      setExpenses((prev) => [expense, ...prev]);
+    }
   }, []);
 
   const deleteExpenseById = useCallback(async (id: string) => {

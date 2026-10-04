@@ -10,46 +10,12 @@ interface Props {
   onDelete: (id: string) => void;
 }
 
-type QuickRange = 'today' | '7d' | '30d' | 'all' | 'custom';
-
-const QUICK_RANGES: { value: QuickRange; label: string }[] = [
-  { value: 'today', label: 'Today' },
-  { value: '7d', label: '7 Days' },
-  { value: '30d', label: '30 Days' },
-  { value: 'all', label: 'All' },
-  { value: 'custom', label: 'Custom' },
-];
-
-function quickRangeBounds(r: QuickRange): { start: string; end: string } {
-  const today = dayjs();
-  const end = today.format('YYYY-MM-DD');
-  switch (r) {
-    case 'today':  return { start: end, end };
-    case '7d':     return { start: today.subtract(6,  'day').format('YYYY-MM-DD'), end };
-    case '30d':    return { start: today.subtract(29, 'day').format('YYYY-MM-DD'), end };
-    case 'all':    return { start: '2000-01-01', end };
-    case 'custom': return { start: '', end: '' };
-  }
-}
-
 const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
-  const today = dayjs().format('YYYY-MM-DD');
-
-  // Quick range pill
-  const [quickRange, setQuickRange] = useState<QuickRange>('all');
-  // Custom date range (overrides quick range when both filled)
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  // Amount filters
+  const [selectedCats, setSelectedCats] = useState<Category[]>([...ALL_CATEGORIES]);
   const [minAmount, setMinAmount] = useState('');
   const [maxAmount, setMaxAmount] = useState('');
-  // Category filter
-  const [selectedCats, setSelectedCats] = useState<Category[]>([...ALL_CATEGORIES]);
-  // Search note
   const [search, setSearch] = useState('');
-  // Show / hide filter panel
   const [showFilters, setShowFilters] = useState(false);
-  // Export modal
   const [showExport, setShowExport] = useState(false);
 
   const toggleCat = (cat: Category) =>
@@ -57,45 +23,34 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
       prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
     );
 
-  const isCustom = quickRange === 'custom';
-
-  // Determine active date bounds
-  const { start: qStart, end: qEnd } = quickRangeBounds(quickRange);
-  const start = isCustom ? (dateFrom || '2000-01-01') : (dateFrom || qStart);
-  const end   = isCustom ? (dateTo   || today)        : (dateTo   || qEnd);
-
   const filtered = useMemo(() => {
     const minAmt = minAmount ? parseFloat(minAmount) : null;
     const maxAmt = maxAmount ? parseFloat(maxAmount) : null;
     return expenses.filter((e) => {
-      if (e.date < start || e.date > end) return false;
       if (!selectedCats.includes(e.category)) return false;
       if (minAmt !== null && e.amount < minAmt) return false;
       if (maxAmt !== null && e.amount > maxAmt) return false;
       if (search && !(e.note?.toLowerCase().includes(search.toLowerCase()) || e.category.toLowerCase().includes(search.toLowerCase()))) return false;
       return true;
     });
-  }, [expenses, start, end, selectedCats, minAmount, maxAmount, search]);
+  }, [expenses, selectedCats, minAmount, maxAmount, search]);
 
   const filteredTotal = filtered.reduce((s, e) => s + e.amount, 0);
 
-  const hasCustomDate = dateFrom || dateTo;
   const activeFilterCount = [
-    hasCustomDate,
     minAmount || maxAmount,
     selectedCats.length < ALL_CATEGORIES.length,
     search,
   ].filter(Boolean).length;
 
   const clearAll = () => {
-    setDateFrom('');
-    setDateTo('');
     setMinAmount('');
     setMaxAmount('');
     setSelectedCats([...ALL_CATEGORIES]);
     setSearch('');
-    setQuickRange('all');
   };
+
+  const currentMonthLabel = dayjs().format('MMMM YYYY');
 
   return (
     <div className="px-4 py-5 flex flex-col gap-4 max-w-lg mx-auto">
@@ -104,10 +59,9 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-gray-900 leading-tight">Expenses</h2>
-          <p className="text-xs text-gray-400 mt-0.5">{filtered.length} entries · ₹{filteredTotal.toFixed(2)}</p>
+          <p className="text-xs text-gray-400 mt-0.5">{currentMonthLabel} · {filtered.length} entries · ₹{filteredTotal.toFixed(2)}</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Export button */}
           <button
             onClick={() => setShowExport(true)}
             title="Export expenses"
@@ -117,7 +71,6 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
           </button>
-          {/* Filters button */}
           <button
             onClick={() => setShowFilters((p) => !p)}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
@@ -158,50 +111,6 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
         )}
       </div>
 
-      {/* Quick date pills */}
-      <div className="flex gap-2 flex-wrap">
-        {QUICK_RANGES.map((r) => (
-          <button
-            key={r.value}
-            onClick={() => { setQuickRange(r.value); if (r.value !== 'custom') { setDateFrom(''); setDateTo(''); } }}
-            className={`flex-1 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-              quickRange === r.value
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200'
-                : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
-            }`}
-          >
-            {r.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Custom date inputs — shown when Custom pill is active */}
-      {isCustom && (
-        <div className="grid grid-cols-2 gap-2">
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-gray-400 font-medium">From</span>
-            <input
-              type="date"
-              value={dateFrom}
-              max={dateTo || today}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition shadow-sm"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-gray-400 font-medium">To</span>
-            <input
-              type="date"
-              value={dateTo}
-              min={dateFrom}
-              max={today}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition shadow-sm"
-            />
-          </div>
-        </div>
-      )}
-
       {/* Filter panel */}
       {showFilters && (
         <div className="bg-white border border-gray-200 rounded-2xl p-4 flex flex-col gap-4 shadow-sm">
@@ -213,10 +122,7 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
               <div className="flex flex-col gap-1">
                 <span className="text-[10px] text-gray-400 font-medium">Min</span>
                 <input
-                  type="number"
-                  min="0"
-                  placeholder="0"
-                  value={minAmount}
+                  type="number" min="0" placeholder="0" value={minAmount}
                   onChange={(e) => setMinAmount(e.target.value)}
                   className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition placeholder:text-gray-300"
                 />
@@ -224,10 +130,7 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
               <div className="flex flex-col gap-1">
                 <span className="text-[10px] text-gray-400 font-medium">Max</span>
                 <input
-                  type="number"
-                  min="0"
-                  placeholder="∞"
-                  value={maxAmount}
+                  type="number" min="0" placeholder="∞" value={maxAmount}
                   onChange={(e) => setMaxAmount(e.target.value)}
                   className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition placeholder:text-gray-300"
                 />
@@ -252,7 +155,6 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
             </div>
           </div>
 
-          {/* Clear */}
           {activeFilterCount > 0 && (
             <button
               onClick={clearAll}
@@ -267,11 +169,10 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
       {/* Expenses list */}
       {filtered.length === 0 ? (
         <div className="bg-white border border-gray-200 rounded-2xl p-8 text-center shadow-sm">
-          <p className="text-gray-400 text-sm">No expenses match your filters.</p>
+          <p className="text-gray-400 text-sm">No expenses this month.</p>
         </div>
       ) : (
         <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
-          {/* Group by date */}
           {Object.entries(
             filtered.reduce<Record<string, Expense[]>>((acc, e) => {
               (acc[e.date] ??= []).push(e);
@@ -282,11 +183,9 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
             .map(([date, items]) => {
               const dayTotal = items.reduce((s, e) => s + e.amount, 0);
               const label =
-                date === dayjs().format('YYYY-MM-DD')
-                  ? 'Today'
-                  : date === dayjs().subtract(1, 'day').format('YYYY-MM-DD')
-                  ? 'Yesterday'
-                  : dayjs(date + 'T00:00:00').format('DD MMM YYYY');
+                date === dayjs().format('YYYY-MM-DD') ? 'Today'
+                : date === dayjs().subtract(1, 'day').format('YYYY-MM-DD') ? 'Yesterday'
+                : dayjs(date + 'T00:00:00').format('DD MMM YYYY');
               return (
                 <div key={date} className="mb-4 last:mb-0">
                   <div className="flex items-center justify-between mb-2">
@@ -300,21 +199,17 @@ const ExpensesPage: React.FC<Props> = ({ expenses, onDelete }) => {
         </div>
       )}
 
-      {/* Summary footer */}
       {filtered.length > 0 && (
         <div className="bg-indigo-50 border border-indigo-100 rounded-2xl px-4 py-3 flex justify-between items-center">
           <span className="text-xs font-semibold text-indigo-500 uppercase tracking-widest">{filtered.length} expenses</span>
           <span className="text-sm font-bold text-indigo-700">Total ₹{filteredTotal.toFixed(2)}</span>
         </div>
       )}
-      {/* Export modal */}
+
       <ExportModal
         open={showExport}
         onClose={() => setShowExport(false)}
-        expenses={expenses}
-        initialFrom={isCustom ? dateFrom : ''}
-        initialTo={isCustom ? dateTo : ''}
-        initialCats={selectedCats}
+        yearMonth={dayjs().format('YYYY-MM')}
       />
     </div>
   );

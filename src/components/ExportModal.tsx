@@ -1,38 +1,13 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import dayjs from 'dayjs';
-import { ALL_CATEGORIES, CATEGORY_COLORS, type Category, type Expense } from '../types';
-import CategoryChip from './CategoryChip';
+import { CATEGORY_COLORS, type Expense } from '../types';
+import { loadExpensesForMonth } from '../utils/storage';
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  expenses: Expense[];
-  /** Pre-fill from current page filters */
-  initialFrom?: string;
-  initialTo?: string;
-  initialCats?: Category[];
-}
-
-type QuickRange = 'today' | '7d' | '30d' | 'all' | 'custom';
-
-const QUICK_RANGES: { value: QuickRange; label: string }[] = [
-  { value: 'today', label: 'Today' },
-  { value: '7d', label: '7 Days' },
-  { value: '30d', label: '30 Days' },
-  { value: 'all', label: 'All' },
-  { value: 'custom', label: 'Custom' },
-];
-
-function quickBounds(r: QuickRange): { start: string; end: string } {
-  const today = dayjs();
-  const end = today.format('YYYY-MM-DD');
-  switch (r) {
-    case 'today':  return { start: end, end };
-    case '7d':     return { start: today.subtract(6,  'day').format('YYYY-MM-DD'), end };
-    case '30d':    return { start: today.subtract(29, 'day').format('YYYY-MM-DD'), end };
-    case 'all':    return { start: '2000-01-01', end };
-    case 'custom': return { start: '', end: '' };
-  }
+  /** "YYYY-MM" — data is fetched on open */
+  yearMonth: string;
 }
 
 function escapeCSV(val: string | number): string {
@@ -43,37 +18,26 @@ function escapeCSV(val: string | number): string {
 
 function toCSV(rows: Expense[]): string {
   const header = ['Date', 'Category', 'Amount (₹)', 'Note'];
-  const lines = [
+  return [
     header.join(','),
     ...rows.map((e) =>
       [e.date, e.category, e.amount.toFixed(2), e.note ?? ''].map(escapeCSV).join(',')
     ),
-  ];
-  return lines.join('\n');
+  ].join('\n');
 }
 
-/** Minimal XLSX writer — produces a valid .xlsx without any dependency */
 function toXLSX(rows: Expense[]): Blob {
-  // Build a simple tab-separated values wrapped in an XLSX-compatible XML
-  // We use the SpreadsheetML (XML) format which Excel/Sheets open natively
   const header = ['Date', 'Category', 'Amount (₹)', 'Note'];
-
   const xmlEscape = (s: string) =>
     s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
   const cell = (v: string | number, type: 'String' | 'Number' = 'String') =>
     type === 'Number'
       ? `<Cell><Data ss:Type="Number">${v}</Data></Cell>`
       : `<Cell><Data ss:Type="String">${xmlEscape(String(v))}</Data></Cell>`;
-
   const headerRow = `<Row>${header.map((h) => cell(h)).join('')}</Row>`;
   const dataRows = rows
-    .map(
-      (e) =>
-        `<Row>${cell(e.date)}${cell(e.category)}${cell(e.amount, 'Number')}${cell(e.note ?? '')}</Row>`
-    )
+    .map((e) => `<Row>${cell(e.date)}${cell(e.category)}${cell(e.amount, 'Number')}${cell(e.note ?? '')}</Row>`)
     .join('');
-
   const xml = `<?xml version="1.0"?>
 <?mso-application progid="Excel.Sheet"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
@@ -85,11 +49,10 @@ function toXLSX(rows: Expense[]): Blob {
   </Table>
  </Worksheet>
 </Workbook>`;
-
   return new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' });
 }
 
-function download(blob: Blob, filename: string) {
+function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -98,47 +61,45 @@ function download(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-const ExportModal: React.FC<Props> = ({
-  open, onClose, expenses, initialFrom = '', initialTo = '', initialCats,
-}) => {
-  const today = dayjs().format('YYYY-MM-DD');
-  const [quickRange, setQuickRange] = useState<QuickRange>('all');
-  const [dateFrom, setDateFrom] = useState(initialFrom);
-  const [dateTo,   setDateTo]   = useState(initialTo);
-  const [cats, setCats] = useState<Category[]>(initialCats ?? [...ALL_CATEGORIES]);
+const ExportModal: React.FC<Props> = ({ open, onClose, yearMonth }) => {
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const toggleCat = (cat: Category) =>
-    setCats((prev) => prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]);
+  // Fetch this month's data the first time the modal opens
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    loadExpensesForMonth(yearMonth).then((data) => {
+      setExpenses(data);
+      setLoading(false);
+    });
+  }, [open, yearMonth]);
 
-  // Compute effective date bounds
-  const isCustom = quickRange === 'custom';
-  const bounds = isCustom ? { start: dateFrom, end: dateTo } : quickBounds(quickRange);
-  const start = bounds.start || '2000-01-01';
-  const end   = bounds.end   || today;
-
-  const filtered = useMemo(() =>
-    expenses.filter((e) =>
-      e.date >= start && e.date <= end && cats.includes(e.category)
-    ),
-    [expenses, start, end, cats]
-  );
+  const label = dayjs(yearMonth + '-01').format('MMMM YYYY');
+  const total = expenses.reduce((s, e) => s + e.amount, 0);
 
   const handleExport = (format: 'csv' | 'xlsx') => {
-    const label = `expenses_${start}_to_${end}`;
+    const filename = `expenses_${yearMonth}`;
     if (format === 'csv') {
-      download(new Blob([toCSV(filtered)], { type: 'text/csv;charset=utf-8' }), `${label}.csv`);
+      triggerDownload(new Blob([toCSV(expenses)], { type: 'text/csv;charset=utf-8' }), `${filename}.csv`);
     } else {
-      download(toXLSX(filtered), `${label}.xls`);
+      triggerDownload(toXLSX(expenses), `${filename}.xls`);
     }
     onClose();
   };
+
+  // Category breakdown for preview
+  const byCategory = expenses.reduce<Record<string, number>>((acc, e) => {
+    acc[e.category] = (acc[e.category] ?? 0) + e.amount;
+    return acc;
+  }, {});
 
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-[300] flex items-end justify-center">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-[480px] bg-white rounded-t-3xl shadow-2xl max-h-[92dvh] flex flex-col overflow-hidden">
+      <div className="relative z-10 w-full max-w-[480px] bg-white rounded-t-3xl shadow-2xl max-h-[80dvh] flex flex-col overflow-hidden">
 
         {/* Handle */}
         <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
@@ -148,8 +109,10 @@ const ExportModal: React.FC<Props> = ({
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 flex-shrink-0">
           <div>
-            <h2 className="text-base font-bold text-gray-900">Export Expenses</h2>
-            <p className="text-xs text-gray-400 mt-0.5">{filtered.length} expenses selected</p>
+            <h2 className="text-base font-bold text-gray-900">Export — {label}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {loading ? 'Loading…' : `${expenses.length} expenses · ₹${total.toFixed(2)}`}
+            </p>
           </div>
           <button onClick={onClose} className="p-2 rounded-xl text-gray-400 hover:bg-gray-100 transition">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -158,102 +121,45 @@ const ExportModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5">
-
-          {/* Date range pills */}
-          <div className="flex flex-col gap-2">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Date Range</span>
-            <div className="flex gap-2 flex-wrap">
-              {QUICK_RANGES.map((r) => (
-                <button
-                  key={r.value}
-                  onClick={() => setQuickRange(r.value)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
-                    quickRange === r.value
-                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-200'
-                      : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {r.label}
-                </button>
-              ))}
+        {/* Category breakdown preview */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <svg className="animate-spin text-indigo-400" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+              </svg>
             </div>
-
-            {/* Custom date inputs */}
-            {isCustom && (
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex flex-col gap-1">
-                  <span className="text-[10px] text-gray-400 font-medium">From</span>
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    max={dateTo || today}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-[10px] text-gray-400 font-medium">To</span>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    min={dateFrom}
-                    max={today}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Category filter */}
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Categories</span>
-              <div className="flex gap-2">
-                <button onClick={() => setCats([...ALL_CATEGORIES])} className="text-xs text-indigo-600 hover:text-indigo-700 font-medium">All</button>
-                <span className="text-gray-300">|</span>
-                <button onClick={() => setCats([])} className="text-xs text-gray-400 hover:text-gray-600 font-medium">None</button>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {ALL_CATEGORIES.map((cat) => (
-                <CategoryChip key={cat} category={cat} selected={cats.includes(cat)} onClick={toggleCat} multi />
-              ))}
-            </div>
-          </div>
-
-          {/* Preview summary */}
-          <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 flex flex-col gap-1">
-            <div className="flex justify-between text-xs text-gray-500">
-              <span>Period</span>
-              <span className="font-medium text-gray-700">{start === '2000-01-01' ? 'All time' : `${start} → ${end}`}</span>
-            </div>
-            <div className="flex justify-between text-xs text-gray-500">
-              <span>Expenses</span>
-              <span className="font-medium text-gray-700">{filtered.length}</span>
-            </div>
-            <div className="flex justify-between text-xs text-gray-500">
-              <span>Total</span>
-              <span className="font-semibold text-indigo-700">₹{filtered.reduce((s, e) => s + e.amount, 0).toFixed(2)}</span>
-            </div>
-            {cats.length < ALL_CATEGORIES.length && (
-              <div className="flex gap-1 flex-wrap mt-1">
-                {cats.map((c) => (
-                  <span key={c} className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: CATEGORY_COLORS[c] }}>{c}</span>
+          ) : expenses.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-6">No expenses for {label}.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {Object.entries(byCategory)
+                .sort(([, a], [, b]) => b - a)
+                .map(([cat, amt]) => (
+                  <div key={cat} className="flex items-center justify-between py-1.5">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: CATEGORY_COLORS[cat as keyof typeof CATEGORY_COLORS] ?? '#999' }}
+                      />
+                      <span className="text-sm text-gray-700">{cat}</span>
+                    </div>
+                    <span className="text-sm font-semibold text-gray-800">₹{amt.toFixed(2)}</span>
+                  </div>
                 ))}
+              <div className="border-t border-gray-100 mt-1 pt-2 flex justify-between">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Total</span>
+                <span className="text-sm font-bold text-indigo-700">₹{total.toFixed(2)}</span>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
-        {/* Footer — two export buttons */}
+        {/* Footer buttons */}
         <div className="px-5 py-4 border-t border-gray-100 flex-shrink-0 flex flex-col gap-2">
           <button
             onClick={() => handleExport('csv')}
-            disabled={filtered.length === 0}
+            disabled={loading || expenses.length === 0}
             className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl transition shadow-md shadow-indigo-200"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -263,7 +169,7 @@ const ExportModal: React.FC<Props> = ({
           </button>
           <button
             onClick={() => handleExport('xlsx')}
-            disabled={filtered.length === 0}
+            disabled={loading || expenses.length === 0}
             className="w-full flex items-center justify-center gap-2 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed text-emerald-700 font-semibold py-3 rounded-xl transition border border-emerald-300"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -272,6 +178,7 @@ const ExportModal: React.FC<Props> = ({
             Export as Excel (.xls)
           </button>
         </div>
+
       </div>
     </div>
   );

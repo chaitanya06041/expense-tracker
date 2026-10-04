@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import AuthGate from './components/AuthGate';
+import { useMonthlyExportBackfill } from './hooks/useMonthlyExportBackfill';
 import { UNSPLITTED_PERSON_NAME } from './types';
 import { useExpenses } from './hooks/useExpenses';
 import { useSplits } from './hooks/useSplits';
@@ -8,8 +9,10 @@ import InputPage from './pages/InputPage';
 import ExpensesPage from './pages/ExpensesPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import SplitsPage from './pages/SplitsPage';
+import HistoryPage from './pages/HistoryPage';
+import HistoryDetailPage from './pages/HistoryDetailPage';
 
-type Tab = 'input' | 'expenses' | 'analytics' | 'splits';
+type Tab = 'input' | 'expenses' | 'analytics' | 'splits' | 'history';
 
 const TABS: { id: Tab; label: string; icon: (active: boolean) => React.ReactNode }[] = [
   {
@@ -42,6 +45,16 @@ const TABS: { id: Tab; label: string; icon: (active: boolean) => React.ReactNode
     ),
   },
   {
+    id: 'history',
+    label: 'History',
+    icon: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.5 : 2} strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <polyline points="12 6 12 12 16 14"/>
+      </svg>
+    ),
+  },
+  {
     id: 'analytics',
     label: 'Analytics',
     icon: (active) => (
@@ -54,17 +67,27 @@ const TABS: { id: Tab; label: string; icon: (active: boolean) => React.ReactNode
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('input');
+  // null = list view, string = detail view for that YYYY-MM
+  const [historyDetail, setHistoryDetail] = useState<string | null>(null);
+
+  // Silent background job: upload missing past months to the 'expenses' bucket
+  useMonthlyExportBackfill();
+
   const { expenses, addExpense, deleteExpense } = useExpenses();
   const { splits, paymentLogs, addSplit, reduceForPerson, clearPersonToZero } = useSplits();
   const { people } = usePeople();
 
-  // Badge: count of splits with remaining balance — exclude the Unsplitted virtual person
   const unsplittedIds = new Set(
     people.filter((p) => p.name.toLowerCase() === UNSPLITTED_PERSON_NAME.toLowerCase()).map((p) => p.id)
   );
   const pendingSplits = splits.filter((s) =>
     s.shares.some((sh) => !unsplittedIds.has(sh.personId) && sh.amount - sh.paid > 0.005)
   ).length;
+
+  const handleTabChange = (tab: Tab) => {
+    setActiveTab(tab);
+    if (tab !== 'history') setHistoryDetail(null);
+  };
 
   return (
     <AuthGate>
@@ -92,6 +115,11 @@ const App: React.FC = () => {
             onZeroOut={clearPersonToZero}
           />
         )}
+        {activeTab === 'history' && (
+          historyDetail
+            ? <HistoryDetailPage yearMonth={historyDetail} onBack={() => setHistoryDetail(null)} />
+            : <HistoryPage onViewMonth={(ym) => setHistoryDetail(ym)} />
+        )}
         {activeTab === 'analytics' && (
           <AnalyticsPage expenses={expenses} />
         )}
@@ -106,7 +134,7 @@ const App: React.FC = () => {
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleTabChange(tab.id)}
                 className={`flex-1 flex flex-col items-center gap-1 py-3 transition-colors relative ${
                   active ? 'text-indigo-600' : 'text-gray-400 hover:text-gray-600'
                 }`}
